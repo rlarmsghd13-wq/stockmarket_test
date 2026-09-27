@@ -2,6 +2,8 @@
 
 - 모든 호출은 디스크 캐시를 거친다. KRX는 느리고 로그인 세션이 1시간마다 만료된다.
 - 수정주가만 쓴다. 액면분할·무상증자 미반영 주가는 성장률과 수익률을 전부 망친다.
+
+**2026-09-27부터 웹 수집을 멈췄다 — 캐시 조회만 된다.** 아래 SCRAPING_ALLOWED 참조.
 """
 from __future__ import annotations
 
@@ -15,6 +17,33 @@ from . import env
 
 env.load()
 
+# ---------------------------------------------------------------------------
+# 웹 수집 중단 — 공식 Open API로 옮길 때까지
+#
+# 2026-09-26 차단 안내문에 이렇게 적혀 있었다.
+#
+#     "접속 제한 해제 후에는 정상적으로 이용하실 수 있습니다.
+#      다만 자동화 수단을 통한 데이터 수집은 제한되며 …"
+#
+# KRX는 빠르게 긁는 것만이 아니라 **웹사이트를 자동으로 긁는 것 자체**를
+# 이용약관(제10조 제2호)으로 제한한다. pykrx가 정확히 그 방식이다 — 개인 KRX
+# 아이디로 로그인한 세션으로 data.krx.co.kr을 긁는다. 속도를 늦춘 것은 걸릴
+# 확률을 낮췄을 뿐 약관 문제를 풀지 않는다.
+#
+# 그래서 KRX가 자동 수집용으로 따로 열어둔 **공식 Open API(openapi.krx.co.kr)**
+# 로 옮기기로 했다. 한경컨센서스·네이버 뉴스를 robots.txt 때문에 공식 API로
+# 옮긴 것과 같은 결정이다.
+#
+# 옮길 때까지 캐시에 있는 데이터(시세 96만 행, 스냅샷 30개)는 그대로 쓰고,
+# **캐시에 없는 요청은 네트워크에 나가지 않고 즉시 거절한다.**
+# 되돌리려면 이 값을 사람이 직접 True로 바꿔야 한다 — 일부러 번거롭게 뒀다.
+# ---------------------------------------------------------------------------
+SCRAPING_ALLOWED = False
+SCRAPING_STOPPED_MSG = (
+    "KRX 웹 수집은 2026-09-27부터 멈췄습니다 (약관상 자동 수집 제한). "
+    "공식 Open API(openapi.krx.co.kr) 전환을 기다리는 중이라 캐시에 있는 "
+    "데이터만 쓸 수 있습니다. src/krx.py의 SCRAPING_ALLOWED 설명을 보세요.")
+
 # pykrx는 **import 시점에 KRX 로그인을 시도**한다. 차단 상태에서 모듈을 최상단에서
 # 임포트하면 `from src import krx` 자체가 예외로 죽어, 상태를 확인하는 코드조차
 # 실행되지 않는다. 실제로 쓸 때 불러오도록 미룬다.
@@ -23,6 +52,9 @@ _stock = None
 
 def _api():
     global _stock
+    if not SCRAPING_ALLOWED:
+        # import 자체가 로그인이므로 여기서 막아야 한다
+        raise Blocked(SCRAPING_STOPPED_MSG)
     if _stock is None:
         from pykrx import stock as _s
         _stock = _s
@@ -65,6 +97,10 @@ def block_notice(timeout: float = 15.0) -> str | None:
 def available() -> tuple[bool, str]:
     """KRX가 지금 응답하는가. 차단 여부 확인용 — 호출 1회만 쓴다."""
     global _circuit_open
+    if not SCRAPING_ALLOWED:
+        # 상태 확인도 로그인이고, 실패하면 block_notice()가 또 GET을 한다.
+        # 수집을 멈춘 동안에는 아무 요청도 보내지 않는다.
+        return False, "웹 수집 중단 — 공식 Open API 전환 대기 (src/krx.py)"
     try:
         t = _api().get_market_ticker_list("20260904", market="KOSPI")
         if t:
@@ -175,6 +211,9 @@ def _cached(name: str, fn, *, retries: int = 2, cache_empty: bool = True):
     p = _CACHE / f"{name}.parquet"
     if p.exists():
         return pd.read_parquet(p)
+    if not SCRAPING_ALLOWED:
+        # 재시도·대기 없이 바로 거절한다. 캐시 적중은 위에서 이미 돌려줬다.
+        raise Blocked(f"{name}: 캐시에 없음. {SCRAPING_STOPPED_MSG}")
     if _circuit_open:
         raise Blocked(
             f"KRX 차단기가 열려 있어 {name}을 요청하지 않았습니다. "

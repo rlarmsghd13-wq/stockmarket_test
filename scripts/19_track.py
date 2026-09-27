@@ -138,6 +138,15 @@ def main() -> int:
     px = store.load("prices_daily")
     ttm = store.load("fin_ttm")
 
+    # 묵은 가격으로 원장을 쓰면 되돌릴 수 없다 — 정산된 행은 다시 안 건드린다
+    try:
+        lag = track.check_fresh(px, args.asof)
+    except track.StalePrices as exc:
+        print(f"  [중단] {exc}")
+        print("        성과추적 원장은 그대로 둡니다. 볼트 노트는 이미 갱신됐습니다.")
+        return 3
+    print(f"  가격 기준 {lag}일 전 종가")
+
     # 게이트 — 실제 볼트에 올라가는 것과 같은 판정
     gf = strategies.gate_features(ttm, args.asof)
     df = g.merge(gf, on="ticker", how="left")

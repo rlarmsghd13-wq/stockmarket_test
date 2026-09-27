@@ -153,6 +153,38 @@ def close_at(px: pd.DataFrame, asof: str) -> pd.Series:
 
 MIN_HOLD_DAYS = 15   # 이보다 짧으면 "같은 달 재실행"으로 본다
 
+# ---------------------------------------------------------------------------
+# 묵은 가격으로는 기록·정산하지 않는다
+#
+# 2026-09-27 발견: 월간 실행(run_monthly.py)에 가격 갱신 단계가 없어서
+# prices_daily가 9/4에 멈춰 있었다. close_at()은 "기준일 이하 마지막 종가"를
+# 주므로 오류 없이 돌아간다 — 9/12 기록의 진입가가 이미 9/4 종가였다.
+# 그대로 10월에 정산하면 청산가도 9/4 종가라 **모든 수익률이 0.00%** 로
+# 기록된다. 정산된 행은 다시 건드리지 않으므로 원장이 영구히 오염된다.
+#
+# 이 원장은 "12개월 쌓이기 전에는 규칙을 바꾸지 않는다"는 원칙의 유일한
+# 근거다. 조용히 틀린 값을 쓰느니 멈추는 게 낫다.
+# ---------------------------------------------------------------------------
+MAX_PRICE_LAG_DAYS = 7   # 주말·연휴를 감안한 여유. 그 이상 묵으면 멈춘다
+
+
+class StalePrices(RuntimeError):
+    """가격 데이터가 기준일보다 너무 오래됐다 — 원장에 쓰지 않는다."""
+
+
+def check_fresh(px: pd.DataFrame, asof: str) -> int:
+    """가격이 기준일보다 며칠 묵었는지. 허용치를 넘으면 StalePrices."""
+    last = pd.to_datetime(px["date"]).max() if len(px) else pd.NaT
+    if pd.isna(last):
+        raise StalePrices("가격 데이터가 비어 있습니다.")
+    lag = (pd.Timestamp(asof) - last).days
+    if lag > MAX_PRICE_LAG_DAYS:
+        raise StalePrices(
+            f"가격이 기준일({asof})보다 {lag}일 묵었습니다 (마지막 {last:%Y-%m-%d}). "
+            f"허용 {MAX_PRICE_LAG_DAYS}일 초과 — 원장에 기록·정산하지 않습니다. "
+            "가격을 먼저 갱신하세요.")
+    return int(lag)
+
 
 def _held_days(entry: pd.Series, asof: str) -> pd.Series:
     return (pd.Timestamp(asof) - pd.to_datetime(entry)).dt.days
@@ -168,6 +200,7 @@ def settle(root: Path, px: pd.DataFrame, asof: str) -> tuple[int, list[str]]:
     led = load_csv(root, LEDGER, LEDGER_COLS)
     if led.empty:
         return 0, []
+    check_fresh(px, asof)          # 묵은 가격이면 여기서 멈춘다 — 정산은 되돌릴 수 없다
     open_rows = (led["ret_pct"].isna()
                  & (led["asof"] < asof)
                  & (_held_days(led["asof"], asof) >= MIN_HOLD_DAYS))
@@ -192,6 +225,7 @@ def record(root: Path, asof: str, sel: pd.DataFrame, px: pd.DataFrame) -> int:
     같은 달을 두 번 돌려도 한 달에 한 줄만 남게 하기 위해서다.
     이미 정산된 기록은 건드리지 않는다.
     """
+    check_fresh(px, asof)          # 진입가가 묵은 가격이면 첫 달 수익률부터 틀린다
     led = load_csv(root, LEDGER, LEDGER_COLS)
     if not led.empty:
         stale = (led["ret_pct"].isna()
