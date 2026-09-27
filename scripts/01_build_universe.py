@@ -13,6 +13,8 @@ import os
 import sys
 from datetime import date
 
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -37,6 +39,11 @@ def main() -> int:
         dates = krx.rebalance_dates()
         print(f"리밸런싱 시점 {len(dates)}개: {dates[0]} ~ {dates[-1]}")
         df = universe.build_history(dates)
+        # 이미 만들어둔 스냅샷을 지우지 않는다. rebalance_dates()는
+        # config.BACKTEST_START 이후만 주므로, 덮어쓰면 그 앞 구간이 사라진다.
+        if store.exists("universe_history"):
+            df = (pd.concat([store.load("universe_history"), df], ignore_index=True)
+                    .drop_duplicates(["ticker", "asof_date"], keep="last"))
         name = "universe_history"
     else:
         df = universe.snapshot(args.asof)

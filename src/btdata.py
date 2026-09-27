@@ -49,11 +49,46 @@ def check_coverage(warn_drop: float = 0.5) -> list[str]:
     return msgs
 
 
-def prepare() -> pd.DataFrame:
-    """gate_panel + 유동성 + 실전 유니버스 플래그 + 벤치마크 3종."""
+STALE_MONTHS = 18     # 분기 공시 주기를 감안해도 이보다 오래되면 묵은 숫자다
+
+
+def check_staleness(gp: pd.DataFrame, warn_share: float = 0.10) -> list[str]:
+    """재무 신선도 점검 — 몇 년 묵은 공시로 채점되는 행이 얼마나 되는가.
+
+    2026-09-26에 확인: `fin_ttm_hist`는 2022년까지만, `fin_ttm`은 **현재**
+    상위 200종목만 담고 있어, 2023년 이후 패널의 절반 가까이가 2022년 재무로
+    채점되고 있었다. 미래 정보는 아니지만 3년 묵은 숫자로 성장성을 재는
+    셈이라 점수가 의미를 잃는다. 시세 결손과 같은 종류의 조용한 오류다.
+    """
+    if "rcept_dt" not in gp.columns:
+        return ["[경고] 패널에 rcept_dt가 없어 재무 신선도를 점검할 수 없습니다.",
+                "       scripts/09_validate.py 로 패널을 다시 만드세요."]
+    d = gp[gp["in_universe"]].copy()
+    if d.empty:
+        return []
+    age = (pd.to_datetime(d["asof"]) -
+           pd.to_datetime(d["rcept_dt"], errors="coerce")).dt.days / 30.44
+    d["stale"] = age > STALE_MONTHS
+    share = d.groupby("asof")["stale"].mean()
+    bad = share[share > warn_share]
+    if not len(bad):
+        return []
+    return [f"[경고] {STALE_MONTHS}개월 넘게 묵은 재무로 채점된 행이 "
+            f"{warn_share*100:.0f}%를 넘는 달이 {len(bad)}개 있습니다 "
+            f"({bad.index.min()} ~ {bad.index.max()}, 최대 {bad.max()*100:.0f}%).",
+            "       scripts/26_fill_new_tickers.py --what dart 로 재무를 채우세요."]
+
+
+def prepare(gp: pd.DataFrame | None = None) -> pd.DataFrame:
+    """gate_panel + 유동성 + 실전 유니버스 플래그 + 벤치마크 3종.
+
+    gp를 넘기면 저장된 gate_panel 대신 그것을 쓴다. 데이터를 고친 전후를
+    **같은 규칙으로** 비교할 때 필요하다 — 비교 코드가 유니버스 조건을
+    다시 적으면 무엇을 비교했는지 알 수 없게 된다.
+    """
     for m in check_coverage():
         print(m)
-    gp = store.load("gate_panel")
+    gp = store.load("gate_panel") if gp is None else gp.copy()
     gp["asof_ts"] = pd.to_datetime(gp["asof"])
     gp = pd.merge_asof(gp.sort_values("asof_ts"), _turnover().sort_values("date"),
                        left_on="asof_ts", right_on="date", by="ticker",
@@ -75,6 +110,8 @@ def prepare() -> pd.DataFrame:
     gp = gp.merge(cw, on=["asof", "strategy"], how="left")
     gp["exc_univ"] = gp["fwd_63"] - gp["b_univ"]
     gp["exc_cap"] = gp["fwd_63"] - gp["b_cap"]
+    for m in check_staleness(gp):
+        print(m)
     return gp
 
 

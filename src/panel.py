@@ -64,7 +64,11 @@ def cohort(asof: str, ttm: pd.DataFrame, px: pd.DataFrame,
         m = metrics.compute(row.to_dict(), market_cap=cap, shares_out=sh,
                             hist=vis, track=track)
         rows.append({"ticker": t, "name": t, "track": track,
-                     "market_cap": cap, **m})
+                     "market_cap": cap, **m,
+                     # 이 행을 채점한 재무가 **언제 공시된 것인지** 남긴다.
+                     # 없으면 3년 묵은 숫자로 채점되고 있어도 알 수가 없다.
+                     "rcept_dt": row.get("rcept_dt"),
+                     "fin_period": row.get("period")})
     if not rows:
         return None
 

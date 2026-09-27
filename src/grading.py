@@ -109,6 +109,39 @@ def _percentile(s: pd.Series, direction: int) -> pd.Series:
     return p if direction > 0 else 100 - p
 
 
+# ---------------------------------------------------------------------------
+# 업종 결손 경고
+#
+# 2026-09-26: `tracks`에 현재 200종목만 있어서, 나머지 226종목이 전부 업종
+# "00"으로 채워졌다. MIN_PEERS=8을 넘으니 폴백도 걸리지 않고, 무관한 226개
+# 회사가 하나의 "업종"으로 서로를 상대로 백분위를 받았다. **백테스트 패널의
+# 58%가 여기 해당했다.** 고치자 성장주 총수익이 +607% → +34%가 됐다.
+#
+# 2단계 백분위(트랙 → 업종)는 이 프로젝트의 핵심 설계인데, 절반 이상에서
+# 작동하지 않고 있었고 결과가 이상해질 때까지 아무도 몰랐다. 그래서 경고한다.
+# ---------------------------------------------------------------------------
+MISSING_SECTOR_WARN = 0.05
+_warned_sector = False
+
+
+def _warn_missing_sector(sector: pd.Series) -> None:
+    global _warned_sector
+    if _warned_sector or sector.empty:
+        return
+    miss = sector.eq("00")
+    if miss.mean() <= MISSING_SECTOR_WARN:
+        return
+    _warned_sector = True          # 패널 구축은 이 함수를 97번 부른다
+    # 라이브러리 코드라 호출 쪽이 stdout을 utf-8로 바꿔놓았다고 가정하지 않는다.
+    # cp949 콘솔에서 em dash 하나 때문에 죽으면 경고가 아니라 사고다.
+    print(f"  [경고] 업종 코드가 없는 종목 {int(miss.sum())}/{len(sector)}개"
+          f" ({miss.mean() * 100:.0f}%). 모두 업종 '00' 한 그룹으로 묶여"
+          " 서로를 상대로 채점됩니다. 2단계 백분위가 작동하지 않습니다.",
+          flush=True)
+    print("        python scripts/26_fill_new_tickers.py --what tracks",
+          flush=True)
+
+
 def build(metrics: pd.DataFrame, sector_map: dict[str, str]) -> pd.DataFrame:
     """지표 테이블 → 부문 점수·등급.
 
@@ -116,6 +149,7 @@ def build(metrics: pd.DataFrame, sector_map: dict[str, str]) -> pd.DataFrame:
     """
     df = metrics.copy()
     df["sector"] = df["ticker"].map(sector_map).fillna("00")
+    _warn_missing_sector(df["sector"])
 
     out_rows = []
     for track, tg in df.groupby("track"):

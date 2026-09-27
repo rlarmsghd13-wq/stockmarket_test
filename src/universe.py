@@ -11,7 +11,37 @@ from datetime import date, timedelta
 import pandas as pd
 
 import config
-from . import krx
+from . import krx, store
+
+# ---------------------------------------------------------------------------
+# 스냅샷은 여러 파일에 나뉘어 쌓인다
+# ---------------------------------------------------------------------------
+# 2018~2022는 `universe_history_2018_2022`, 2026-09-05는 `universe_20260905`,
+# 나중에 메운 구멍(2020-11 · 2023~2026)은 `universe_history`에 들어 있다.
+# **소비자가 파일 이름을 직접 적으면 안 된다.** 새 스냅샷을 만들어도 옛 표본만
+# 보게 되고, 표본이 줄어든 것은 결과가 이상해지기 전까지 드러나지 않는다.
+# 2023~2025 구멍이 실제로 그렇게 오래 남아 있었다.
+SNAPSHOT_STORES = ("universe_20260905", "universe_history_2018_2022",
+                   "universe_history")
+
+
+def load_snapshots() -> pd.DataFrame:
+    """존재하는 유니버스 스냅샷 전부. (ticker, asof_date) 중복은 뒤가 이긴다."""
+    frames = [store.load(n) for n in SNAPSHOT_STORES if store.exists(n)]
+    if not frames:
+        raise FileNotFoundError(
+            "유니버스 스냅샷이 없습니다. scripts/01_build_universe.py 를 먼저 실행하세요.")
+    out = pd.concat(frames, ignore_index=True)
+    return out.drop_duplicates(["ticker", "asof_date"], keep="last")
+
+
+def included_tickers() -> list[str]:
+    """한 번이라도 유니버스에 편입된 종목 — 백테스트 표본의 합집합.
+
+    지금 상위 200에 있는 종목만 쓰면 생존편향이 그대로 남는다.
+    """
+    d = load_snapshots()
+    return sorted(set(d[d["included"]]["ticker"]))
 
 
 def _liquidity(d: str, market: str, sample_days: int = 5) -> pd.DataFrame:

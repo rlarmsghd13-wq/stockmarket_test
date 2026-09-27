@@ -24,7 +24,7 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-from src import dart, krx, quarterly, store, ttm  # noqa: E402
+from src import dart, krx, quarterly, store, ttm, universe  # noqa: E402
 
 YEARS = list(range(2017, 2023))          # TTM은 전년이 있어야 하므로 2017부터
 PRICE_START, PRICE_END = "2017-01-01", "2023-06-30"
@@ -35,15 +35,8 @@ def log(m: str) -> None:
 
 
 def target_tickers() -> list[str]:
-    """과거 유니버스 ∪ 현재 유니버스."""
-    hist = store.load("universe_history_2018_2022")
-    t = set(hist[hist["included"]]["ticker"])
-    try:
-        cur = store.load("universe_20260905")
-        t |= set(cur[cur["included"]]["ticker"])
-    except Exception:
-        pass
-    return sorted(t)
+    """한 번이라도 유니버스에 편입된 종목 전부."""
+    return universe.included_tickers()
 
 
 def fetch_dart(tickers: list[str], limit: int) -> int:

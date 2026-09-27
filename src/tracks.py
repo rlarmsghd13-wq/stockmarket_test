@@ -112,6 +112,18 @@ def assign(corp_code: str, ticker: str, corp_name: str, *,
 
     track, reason = classify(induty, debt_ratio, corp_name)
     has_fin, fin_ratio = detect_finance_segment(raw_bs, assets)
+
+    # 부채비율만 보고 금융으로 돌린 판정은 재무제표로 한 번 확인한다.
+    # 항공·해운처럼 리스부채가 큰 산업이나 부실 기업이 부채비율 1,000%를 넘겨
+    # 금융으로 오분류된다 — 아시아나항공 1,370%가 그렇게 T2가 됐다. 금융으로
+    # 보내면 부채비율·유동비율·영업이익률이 전부 NULL이 되고 은행과 나란히
+    # 채점되므로, **금융성 자산이 실제로 있을 때만** 금융이다.
+    # (다우기술 1,007%는 키움증권을 연결해 금융성 자산이 잡히므로 T2가 맞다.)
+    if track == config.TRACK_FINANCE and "업종코드 무시" in reason and not has_fin:
+        track = config.TRACK_GENERAL
+        reason = (f"부채비율 {debt_ratio:.0f}%지만 금융성 자산 없음 → 일반"
+                  if debt_ratio is not None else "금융성 자산 없음 → 일반")
+
     has_fin = bool(has_fin and track == config.TRACK_GENERAL)
 
     # 금융성 자산이 있다 ≠ 안정성 지표가 망가졌다. 부채비율까지 부풀었을 때만

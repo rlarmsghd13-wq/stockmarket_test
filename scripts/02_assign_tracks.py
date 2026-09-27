@@ -64,6 +64,13 @@ def main() -> int:
         print("판정 결과가 없습니다.")
         return 1
     df = df.merge(inc[["ticker", "name", "market_cap"]], on="ticker", how="left")
+    # **덮어쓰지 않고 합친다.** 과거 유니버스 종목(26_fill_new_tickers.py가 채운
+    # 284개)까지 들어 있는 표를 현재 200종목으로 덮으면, 판정 없는 종목이
+    # 조용히 T1(일반)으로 취급되어 은행·지주의 지표가 망가진다.
+    if store.exists("tracks"):
+        old = store.load("tracks")
+        df = (pd.concat([df, old], ignore_index=True)
+                .drop_duplicates(["ticker"], keep="first"))   # 새 판정이 이긴다
     store.save(df, "tracks")
 
     print(f"\n판정 {len(df)}종목" + (f" / corp_code 없음 {len(missing)}종목" if missing else ""))

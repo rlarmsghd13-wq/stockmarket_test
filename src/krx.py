@@ -29,13 +29,55 @@ def _api():
     return _stock
 
 
+BLOCK_MARK = "이용 제한"      # KRX 차단 안내 페이지에 들어 있는 문구
+
+
+def block_notice(timeout: float = 15.0) -> str | None:
+    """차단 안내 페이지를 읽어 사람이 알아볼 수 있는 사유를 돌려준다.
+
+    차단 중에는 pykrx가 `JSONDecodeError: Expecting value: line 13 column 1`을
+    낸다. 그 메시지만 보면 날짜가 잘못됐나 싶지만, 실제로는
+    data.krx.co.kr **전체**가 아래 안내 페이지를 준다.
+
+        "자동화 수단을 통한 비정상 대량 조회가 감지되어 해당 IP의 접속이
+         일시적으로 제한되었습니다 … 탐지일로부터 1일간"
+
+    로그인 요청이 아니라 평범한 GET 1회만 쓴다. 차단을 확인하는 행위가
+    다시 '대량 조회'로 잡히지 않게, 실패 경로에서만 부른다.
+    """
+    import re
+    import requests
+    try:
+        r = requests.get(
+            "https://data.krx.co.kr/contents/MDC/COMS/client/MDCCOMS001.cmd",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+    except Exception:
+        return None
+    if BLOCK_MARK not in r.text:
+        return None
+    txt = re.sub(r"<(script|style).*?</\1>", " ", r.text, flags=re.S)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    i = txt.find(BLOCK_MARK)
+    return txt[i:i + 220]
+
+
 def available() -> tuple[bool, str]:
     """KRX가 지금 응답하는가. 차단 여부 확인용 — 호출 1회만 쓴다."""
+    global _circuit_open
     try:
         t = _api().get_market_ticker_list("20260904", market="KOSPI")
-        return (True, f"정상 — KOSPI {len(t)}종목 응답") if t else (False, "빈 응답")
+        if t:
+            return True, f"정상 — KOSPI {len(t)}종목 응답"
+        why = "빈 응답"
     except Exception as exc:
-        return False, f"{type(exc).__name__}: {str(exc)[:80]}"
+        why = f"{type(exc).__name__}: {str(exc)[:80]}"
+    notice = block_notice()
+    _circuit_open = True          # 차단 확인 — 더 두드리지 않는다
+    if notice:
+        return False, f"IP 차단됨 — {notice}"
+    return False, why
+
 
 _CACHE = config.RAW / "krx"
 _CACHE.mkdir(parents=True, exist_ok=True)
@@ -43,14 +85,22 @@ _CACHE.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 # 호출 속도 제한
 #
-# 2026-09-06에 KRX가 이 IP를 차단했다. 원인은 명확하다 —
-#   · 하루 1,100회 이상을 간격 없이 최대 속도로 호출
-#   · 시세 수집과 유니버스 복원을 **동시에** 실행해 세션 두 개가 각각 로그인
-# 캐시가 있으면 네트워크를 타지 않으므로, 실제로 느려지는 건 첫 수집뿐이다.
+# 두 번 차단당하고 알게 된 것: **문제는 하루 총량이 아니라 순간 속도다.**
+#   · 2026-09-06 — 하루 1,100회 이상을 간격 없이, 그리고 두 작업을 동시에 실행
+#   · 2026-09-26 — 하루 **190회**뿐이었는데도 차단됐다. 0.35초 간격으로
+#     90초 동안 162회를 몰아친 것이 "자동화 수단을 통한 비정상 대량 조회"로
+#     잡혔다. 그때 하루 한도 800회는 4분의 1도 쓰지 않은 상태였다.
+#
+# 그래서 간격을 늘리고, 짧은 창 안의 건수도 따로 막는다. 캐시가 있으면
+# 네트워크를 타지 않으므로 느려지는 건 첫 수집뿐이다.
+# 스냅샷 16개(약 290콜)는 이 설정으로 약 15분 걸린다 — 월 1회 작업에 충분하다.
 # ---------------------------------------------------------------------------
-MIN_INTERVAL = 0.35          # 초. 초당 약 3회
-DAILY_SOFT_LIMIT = 800       # 넘으면 경고. 하드 차단은 하지 않는다
+MIN_INTERVAL = 2.0           # 초. 0.35초가 차단을 불렀다
+BURST_WINDOW = 300           # 초
+BURST_LIMIT = 100            # 이 창 안에서 이만큼 넘으면 창이 빌 때까지 기다린다
+DAILY_SOFT_LIMIT = 400       # 넘으면 경고. 하드 차단은 하지 않는다
 _last_call = 0.0
+_recent: list[float] = []    # 최근 호출 시각 (BURST_WINDOW 안)
 _calls_today = 0
 _call_day = date.today()
 
@@ -60,10 +110,25 @@ def _throttle() -> None:
     today = date.today()
     if today != _call_day:
         _call_day, _calls_today = today, 0
+
     wait = MIN_INTERVAL - (time.monotonic() - _last_call)
     if wait > 0:
         time.sleep(wait)
-    _last_call = time.monotonic()
+
+    # 창 안의 건수 제한 — 평균 속도가 아니라 순간 속도를 막는 장치다
+    now = time.monotonic()
+    _recent[:] = [t for t in _recent if now - t < BURST_WINDOW]
+    if len(_recent) >= BURST_LIMIT:
+        rest = BURST_WINDOW - (now - _recent[0]) + 1
+        if rest > 0:
+            print(f"  [속도] 최근 {BURST_WINDOW}초에 {len(_recent)}회 — "
+                  f"{rest:.0f}초 쉽니다.", flush=True)
+            time.sleep(rest)
+        now = time.monotonic()
+        _recent[:] = [t for t in _recent if now - t < BURST_WINDOW]
+
+    _last_call = now
+    _recent.append(now)
     _calls_today += 1
     if _calls_today == DAILY_SOFT_LIMIT:
         print(f"  [경고] KRX 호출 {_calls_today}회 — 오늘은 여기서 멈추는 것을 권합니다.",
@@ -74,10 +139,46 @@ def call_count() -> int:
     return _calls_today
 
 
-def _cached(name: str, fn, *, retries: int = 3, cache_empty: bool = True):
+# ---------------------------------------------------------------------------
+# 차단기 — 연속 실패가 쌓이면 네트워크를 아예 끊는다
+#
+# pykrx는 요청이 실패하면 **로그인을 다시 시도한다.** 그래서 `_cached`가
+# 재시도 3회를 돌면 실패한 호출 하나마다 로그인 시도가 3번 발생한다.
+# 2026-09-26에 KRX 로그인 엔드포인트가 JSON 대신 HTML을 주기 시작했는데,
+# 스냅샷 6개가 각각 3번씩 재시도해 짧은 시간에 로그인 실패가 18번 쌓였다.
+# 이것이 정확히 과거 24시간 IP 차단을 불렀던 행동이다.
+#
+# 연속 실패가 CIRCUIT_TRIP에 닿으면 이후 모든 호출을 네트워크 없이 즉시
+# 거절한다. 캐시 조회는 계속 동작한다.
+# ---------------------------------------------------------------------------
+CIRCUIT_TRIP = 2
+_consec_fail = 0
+_circuit_open = False
+
+
+class Blocked(RuntimeError):
+    """KRX가 응답하지 않아 차단기가 열렸다. 재시도하지 말고 나중에 다시."""
+
+
+def circuit_open() -> bool:
+    return _circuit_open
+
+
+def reset_circuit() -> None:
+    """사람이 상태를 확인한 뒤에만 부른다."""
+    global _consec_fail, _circuit_open
+    _consec_fail, _circuit_open = 0, False
+
+
+def _cached(name: str, fn, *, retries: int = 2, cache_empty: bool = True):
+    global _consec_fail, _circuit_open
     p = _CACHE / f"{name}.parquet"
     if p.exists():
         return pd.read_parquet(p)
+    if _circuit_open:
+        raise Blocked(
+            f"KRX 차단기가 열려 있어 {name}을 요청하지 않았습니다. "
+            "연속 실패가 누적됐습니다 — 몇 시간 뒤 다시 실행하세요.")
     last = None
     for i in range(retries):
         try:
@@ -90,7 +191,14 @@ def _cached(name: str, fn, *, retries: int = 3, cache_empty: bool = True):
             # 재시도하면 차단이 길어질 뿐이다.
             time.sleep(3.0 * (i + 1))
     else:
+        _consec_fail += 1
+        if _consec_fail >= CIRCUIT_TRIP:
+            _circuit_open = True
+            print(f"  [차단기] KRX 연속 실패 {_consec_fail}회 — 이후 호출을 "
+                  "중단합니다. 로그인 실패를 반복하면 IP가 차단됩니다.",
+                  flush=True)
         raise RuntimeError(f"KRX 호출 실패: {name}") from last
+    _consec_fail = 0
     if df is None or df.empty:
         df = pd.DataFrame()
     if cache_empty or not df.empty:
@@ -165,7 +273,10 @@ def market_snapshot(d: str, market: str) -> pd.DataFrame:
         df["date"] = d
         return df
 
-    return _cached(f"cap_{market}_{d}", _fetch)
+    # 전 종목 조회가 **빈 응답**이면 그건 답이 아니라 오류다. 캐시에 남기면
+    # 그 날짜가 영구히 망가진다 — names_KOSPI_20201120이 실제로 그래서
+    # 2020-11 스냅샷을 8개월간 못 만들고 있었다.
+    return _cached(f"cap_{market}_{d}", _fetch, cache_empty=False)
 
 
 def fundamental_snapshot(d: str, market: str) -> pd.DataFrame:
@@ -197,7 +308,7 @@ def ticker_names(d: str, market: str) -> pd.DataFrame:
         rows = [{"ticker": t, "name": _api().get_market_ticker_name(t)} for t in tickers]
         return pd.DataFrame(rows)
 
-    return _cached(f"names_{market}_{d}", _fetch)
+    return _cached(f"names_{market}_{d}", _fetch, cache_empty=False)
 
 
 # ---------------------------------------------------------------------------

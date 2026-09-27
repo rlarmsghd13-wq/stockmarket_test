@@ -32,7 +32,7 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-from src import btdata, store, strategies  # noqa: E402
+from src import btdata, store, strategies, universe  # noqa: E402
 
 _here = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -189,8 +189,7 @@ def main() -> int:
     print("\n" + "=" * 96)
     print("소수 종목 의존도 — 상위 기여 5종목을 빼면")
     print("=" * 96)
-    u = pd.concat([store.load("universe_history_2018_2022"),
-                   store.load("universe_20260905")])
+    u = universe.load_snapshots()
     nmap = u.drop_duplicates("ticker").set_index("ticker")["name"].to_dict()
     print(f"  {'신호':<26}{'건당평균':>10}{'상위5 제외':>12}{'변화':>10}  기여 상위 3종목")
     for nm, (_, _, legs) in rows.items():

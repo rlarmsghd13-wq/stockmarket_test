@@ -8,6 +8,5 @@ if not exist logs mkdir logs
 echo.>> logs\news_weekly.log
 echo ===== %date% %time% =====>> logs\news_weekly.log
 rem 파이썬 실행 파일 경로가 PATH 에 없으면 아래를 절대경로로 바꾼다
-python scripts_news_consensus.py >> logs
-ews_weekly.log 2>&1
+python scripts\21_news_consensus.py >> logs\news_weekly.log 2>&1
 exit /b %errorlevel%

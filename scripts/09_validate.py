@@ -38,7 +38,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 import config                                                       # noqa: E402
-from src import panel, store, strategies       # noqa: E402
+from src import panel, store, strategies, universe   # noqa: E402
 
 CATS = ["growth", "profitability", "stability", "valuation", "momentum"]
 CAT_KR = {"growth": "성장성", "profitability": "수익성", "stability": "안정성",
@@ -110,12 +110,7 @@ def main() -> int:
     tracks = store.load("tracks").set_index("ticker")
     # 주식수는 과거 + 현재 유니버스 스냅샷을 합쳐 시점별로 찾는다.
     # 현재 유니버스만 쓰면 지금 상위 200에 없는 종목이 통째로 빠진다.
-    snaps = []
-    for n in ("universe_history_2018_2022", "universe_20260905"):
-        if store.exists(n):
-            d = store.load(n)
-            snaps.append(d[["ticker", "asof_date", "shares_out"]])
-    snapshots = pd.concat(snaps, ignore_index=True) if snaps else pd.DataFrame()
+    snapshots = universe.load_snapshots()[["ticker", "asof_date", "shares_out"]]
     print(f"주식수 스냅샷 {len(snapshots):,}행 / {snapshots.ticker.nunique()}종목")
     sector = {t: str(tracks.loc[t, "induty_code"])[:2] for t in tracks.index}
 

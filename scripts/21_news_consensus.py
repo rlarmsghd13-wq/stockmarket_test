@@ -30,7 +30,7 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-from src import env, news_consensus as nc, store  # noqa: E402
+from src import env, news_consensus as nc, store, universe  # noqa: E402
 
 TEST = ["005930", "000660", "005380", "105560", "196170",
         "103590", "111770", "062040", "267270", "263750"]
@@ -76,11 +76,8 @@ def save_history(d: pd.DataFrame) -> pd.DataFrame:
 
 def market_names() -> list[str]:
     """전체 상장사명 — "CJ"가 "CJ제일제당" 안에서 잡히지 않게 막는 데 쓴다."""
-    names = set()
-    for n in ("universe_20260905", "universe_history_2018_2022"):
-        if store.exists(n):
-            names |= set(store.load(n)["name"].dropna().astype(str))
-    return sorted(names)
+    d = universe.load_snapshots()
+    return sorted(set(d["name"].dropna().astype(str)))
 
 
 def band_filter(obs: pd.DataFrame, px: pd.DataFrame, t: str) -> tuple[pd.DataFrame, int]:
